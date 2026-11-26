@@ -232,7 +232,27 @@ ACCESS_RE = re.compile(
 )
 TIME_RE = re.compile(r":(\d{2}:\d{2}:\d{2}) ")
 IP_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
-BOT_RE = re.compile(r"([A-Za-z0-9_.\-]*(?:[Bb]ot|Spider|Crawler|GPT|Claude)[A-Za-z0-9_.\-]*)")
+GENERIC_UA_TOKENS = {
+    "mozilla", "applewebkit", "chrome", "safari", "gecko", "firefox",
+    "edge", "opera", "opr", "version", "mobile", "linux", "windows",
+    "android", "like",
+}
+
+
+def bot_name(ua):
+    """The name a crawler declares for itself in its user-agent, if any.
+
+    Generic on purpose - no brand list. Crawlers self-identify either as
+    '(compatible; Name/1.0; ...)' or as a bare product token that is not
+    one of the usual browser tokens.
+    """
+    m = re.search(r"compatible;\s*([^/;\s]+)", ua)
+    if m:
+        return m.group(1)
+    for tok in re.findall(r"([A-Za-z][A-Za-z0-9_.\-]*)/", ua):
+        if tok.lower() not in GENERIC_UA_TOKENS:
+            return tok
+    return ""
 
 
 def format_access(line):
@@ -248,9 +268,9 @@ def format_access(line):
     quoted = re.findall(r'"([^"]*)"', line)
     bot = ""
     if len(quoted) >= 3:
-        bm = BOT_RE.search(quoted[2])
-        if bm:
-            bot = "  " + bm.group(1)
+        name = bot_name(quoted[2])
+        if name:
+            bot = "  " + name
     if len(path) > 90:
         path = path[:87] + "..."
     return f"{when}  {status}  {method} {path}  {size}B  {ip}{bot}"
