@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>System Stats</title>
+<style>
+  :root{
+    --bg:#0d1117; --card:#161b22; --card2:#1c2330; --line:#2a3242;
+    --text:#e6edf3; --muted:#8b98a9; --accent:#4f9cf9; --green:#3fb950;
+    --red:#f85149; --amber:#d29922;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  a{color:var(--accent);text-decoration:none}
+  header{display:flex;align-items:center;gap:14px;padding:16px 22px;
+    border-bottom:1px solid var(--line);background:var(--card)}
+  header h1{font-size:19px;margin:0;font-weight:650;letter-spacing:.2px}
+  header .live{margin-left:auto;color:var(--muted);font-size:12.5px;
+    display:flex;align-items:center;gap:7px}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--green);
+    box-shadow:0 0 7px var(--green)}
+  .wrap{padding:20px 22px;max-width:1280px;margin:0 auto}
+  .sysgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
+    gap:12px;margin-bottom:20px}
+  .syscard{background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:13px 15px}
+  .syscard .lbl{color:var(--muted);font-size:11.5px;text-transform:uppercase;
+    letter-spacing:.7px;margin-bottom:6px}
+  .syscard .val{font-size:19px;font-weight:650}
+  .syscard .sub{color:var(--muted);font-size:12px;margin-top:3px}
+  .bar{height:6px;background:#242c3a;border-radius:3px;margin-top:9px;overflow:hidden}
+  .bar i{display:block;height:100%;background:var(--accent);border-radius:3px;
+    transition:width .6s ease}
+  .bar i.hot{background:var(--amber)} .bar i.crit{background:var(--red)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
+  .ccard{background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:16px;cursor:pointer;transition:border-color .15s,transform .15s}
+  .ccard:hover{border-color:var(--accent);transform:translateY(-1px)}
+  .ccard .top{display:flex;align-items:center;gap:9px;margin-bottom:4px}
+  .ccard .name{font-size:16px;font-weight:650;word-break:break-all}
+  .ccard .img{color:var(--muted);font-size:12px;word-break:break-all;margin-bottom:12px}
+  .sdot{width:9px;height:9px;border-radius:50%;flex:none}
+  .sdot.run{background:var(--green);box-shadow:0 0 6px var(--green)}
+  .sdot.stop{background:var(--red)}
+  .stat{margin-top:9px}
+  .stat .row{display:flex;justify-content:space-between;font-size:12.5px}
+  .stat .row .k{color:var(--muted)}
+  .foot{color:var(--muted);font-size:12px;margin-top:10px}
+  /* detail */
+  .back{display:inline-block;margin-bottom:14px;font-size:14px}
+  .detail{display:grid;grid-template-columns:1fr 300px;gap:14px;align-items:start}
+  @media(max-width:900px){.detail{grid-template-columns:1fr}}
+  .console{background:#05080c;border:1px solid var(--line);border-radius:12px;
+    display:flex;flex-direction:column;height:72vh;overflow:hidden}
+  .console .chead{display:flex;align-items:center;gap:10px;padding:10px 14px;
+    border-bottom:1px solid var(--line);background:var(--card)}
+  .console .chead b{font-size:14px}
+  .console .chead button{margin-left:auto;background:var(--card2);color:var(--text);
+    border:1px solid var(--line);border-radius:7px;padding:5px 12px;cursor:pointer;
+    font-size:12.5px}
+  #logbox{flex:1;overflow-y:auto;padding:12px 14px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    font-size:12.3px;line-height:1.55;white-space:pre-wrap;word-break:break-all}
+  .side{background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:16px}
+  .side h3{margin:0 0 10px;font-size:13px;text-transform:uppercase;
+    letter-spacing:.7px;color:var(--muted)}
+  .side .kv{display:flex;justify-content:space-between;gap:10px;
+    padding:6px 0;border-bottom:1px solid #212a38;font-size:13px}
+  .side .kv:last-child{border-bottom:none}
+  .side .kv .k{color:var(--muted);flex:none}
+  .side .kv .v{text-align:right;word-break:break-all}
+</style>
+</head>
+<body>
+<header>
+  <h1>&#128421; System Stats</h1>
+  <div class="live"><span class="dot"></span><span id="livetxt">live</span></div>
+</header>
+<div class="wrap" id="app"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+let timer = null, es = null, autoScroll = true, lastNet = {};
+
+function fmtBytes(b){
+  if(b == null || isNaN(b)) return "-";
+  const u = ["B","KB","MB","GB","TB"]; let i = 0, v = b;
+  while(v >= 1024 && i < u.length-1){ v /= 1024; i++; }
+  return v.toFixed(v >= 100 ? 0 : 1) + " " + u[i];
+}
+function fmtRate(b){ return fmtBytes(b) + "/s"; }
+function fmtUptime(s){
+  const d = Math.floor(s/86400), h = Math.floor(s%86400/3600), m = Math.floor(s%3600/60);
+  return (d ? d+"d " : "") + h + "h " + m + "m";
+}
+function barCls(p){ return p >= 90 ? "crit" : p >= 70 ? "hot" : ""; }
+function netRate(id, rx, tx){
+  const now = Date.now()/1000, prev = lastNet[id];
+  lastNet[id] = {rx, tx, t: now};
+  if(!prev || now <= prev.t) return [0, 0];
+  return [Math.max(0,(rx-prev.rx)/(now-prev.t)), Math.max(0,(tx-prev.tx)/(now-prev.t))];
+}
+
+/* ---------------- dashboard ---------------- */
+async function loadDashboard(){
+  const r = await fetch("/api/overview"); const d = await r.json();
+  const s = d.system;
+  const memPct = s.mem_total ? 100*s.mem_used/s.mem_total : 0;
+  const diskPct = s.disk_total ? 100*s.disk_used/s.disk_total : 0;
+  $("#livetxt").textContent = "live - refreshes every 5s";
+  $("#app").innerHTML = `
+    <div class="sysgrid">
+      <div class="syscard"><div class="lbl">CPU</div><div class="val">${s.cpu_pct}%</div>
+        <div class="sub">${s.cpus} cores - load ${s.load.join(" / ")}</div>
+        <div class="bar"><i class="${barCls(s.cpu_pct)}" style="width:${s.cpu_pct}%"></i></div></div>
+      <div class="syscard"><div class="lbl">Memory</div><div class="val">${fmtBytes(s.mem_used)}</div>
+        <div class="sub">of ${fmtBytes(s.mem_total)} (${memPct.toFixed(0)}%)</div>
+        <div class="bar"><i class="${barCls(memPct)}" style="width:${memPct}%"></i></div></div>
+      <div class="syscard"><div class="lbl">Disk</div><div class="val">${fmtBytes(s.disk_used)}</div>
+        <div class="sub">of ${fmtBytes(s.disk_total)} (${diskPct.toFixed(0)}%)</div>
+        <div class="bar"><i class="${barCls(diskPct)}" style="width:${diskPct}%"></i></div></div>
+      <div class="syscard"><div class="lbl">Network</div>
+        <div class="val">&#8595; ${fmtRate(s.net_rx_rate)}</div>
+        <div class="sub">&#8593; ${fmtRate(s.net_tx_rate)} - up ${fmtUptime(s.uptime_s)}</div></div>
+      <div class="syscard"><div class="lbl">Containers</div>
+        <div class="val">${s.containers_running} running</div>
+        <div class="sub">${s.containers_total} total</div></div>
+    </div>
+    <div class="grid">
+      ${d.containers.map(c => {
+        const [rxr, txr] = netRate(c.name, c.net_rx, c.net_tx);
+        return `
+        <div class="ccard" onclick="location.hash='/c/${encodeURIComponent(c.name)}'">
+          <div class="top"><span class="sdot ${c.state==="running" ? "run" : "stop"}"></span>
+            <span class="name">${c.name}</span></div>
+          <div class="img">${c.image} - ${c.status}</div>
+          <div class="stat"><div class="row"><span class="k">CPU</span><span>${c.cpu_pct.toFixed(1)}%</span></div>
+            <div class="bar"><i class="${barCls(c.cpu_pct)}" style="width:${Math.min(100,c.cpu_pct)}%"></i></div></div>
+          <div class="stat"><div class="row"><span class="k">Memory</span>
+            <span>${fmtBytes(c.mem_used)} / ${fmtBytes(c.mem_limit)} (${c.mem_pct.toFixed(0)}%)</span></div>
+            <div class="bar"><i class="${barCls(c.mem_pct)}" style="width:${Math.min(100,c.mem_pct)}%"></i></div></div>
+          <div class="foot">Net &#8595; ${fmtRate(rxr)} &nbsp;&#8593; ${fmtRate(txr)} &nbsp;-&nbsp; PIDs ${c.pids}</div>
+        </div>`;
+      }).join("")}
+    </div>`;
+}
+
+/* ---------------- container detail ---------------- */
+async function loadDetail(name){
+  const r = await fetch("/api/container/" + encodeURIComponent(name));
+  if(!r.ok){ $("#app").innerHTML = "<p>Container not found.</p>"; return; }
+  const c = await r.json();
+  const s = c.system;
+  const [rxr, txr] = netRate("d:"+c.name, c.net_rx, c.net_tx);
+  const el = $("#sideinfo");
+  if(el){
+    el.innerHTML = sideHtml(c, s, rxr, txr);
+    return; // subsequent polls only refresh the sidebar
+  }
+  $("#livetxt").textContent = "live - console streams in real time, stats every 2s";
+  $("#app").innerHTML = `
+    <a class="back" href="#/">&larr; All containers</a>
+    <div class="detail">
+      <div class="console">
+        <div class="chead"><b>${c.name}</b><span style="color:var(--muted);font-size:12px">console - live</span>
+          <button id="scrollbtn">Pause scroll</button></div>
+        <div id="logbox"></div>
+      </div>
+      <div class="side" id="sideinfo">${sideHtml(c, s, rxr, txr)}</div>
+    </div>`;
+  $("#scrollbtn").onclick = () => {
+    autoScroll = !autoScroll;
+    $("#scrollbtn").textContent = autoScroll ? "Pause scroll" : "Resume scroll";
+  };
+  const box = $("#logbox");
+  es = new EventSource("/api/logs/" + encodeURIComponent(name));
+  es.onmessage = ev => {
+    const line = document.createElement("div");
+    try { line.textContent = JSON.parse(ev.data); } catch(e){ line.textContent = ev.data; }
+    box.appendChild(line);
+    while(box.childNodes.length > 1200) box.removeChild(box.firstChild);
+    if(autoScroll) box.scrollTop = box.scrollHeight;
+  };
+}
+function sideHtml(c, s, rxr, txr){
+  return `
+    <h3>Container</h3>
+    <div class="kv"><span class="k">State</span><span class="v">${c.state}</span></div>
+    <div class="kv"><span class="k">CPU</span><span class="v">${c.cpu_pct.toFixed(1)}%</span></div>
+    <div class="kv"><span class="k">Memory</span><span class="v">${fmtBytes(c.mem_used)} / ${fmtBytes(c.mem_limit)}</span></div>
+    <div class="kv"><span class="k">Net in</span><span class="v">${fmtBytes(c.net_rx)} (${fmtRate(rxr)})</span></div>
+    <div class="kv"><span class="k">Net out</span><span class="v">${fmtBytes(c.net_tx)} (${fmtRate(txr)})</span></div>
+    <div class="kv"><span class="k">Disk read</span><span class="v">${fmtBytes(c.blk_r)}</span></div>
+    <div class="kv"><span class="k">Disk write</span><span class="v">${fmtBytes(c.blk_w)}</span></div>
+    <div class="kv"><span class="k">PIDs</span><span class="v">${c.pids}</span></div>
+    <div class="kv"><span class="k">Restarts</span><span class="v">${c.restarts}</span></div>
+    <div class="kv"><span class="k">Image</span><span class="v">${c.image}</span></div>
+    <div class="kv"><span class="k">Started</span><span class="v">${c.started ? new Date(c.started).toLocaleString() : "-"}</span></div>
+    ${c.ports.map(p => `<div class="kv"><span class="k">Port</span><span class="v">${p}</span></div>`).join("")}
+    <h3 style="margin-top:16px">System</h3>
+    <div class="kv"><span class="k">CPU</span><span class="v">${s.cpu_pct}%</span></div>
+    <div class="kv"><span class="k">Memory</span><span class="v">${fmtBytes(s.mem_used)} / ${fmtBytes(s.mem_total)}</span></div>
+    <div class="kv"><span class="k">Disk</span><span class="v">${fmtBytes(s.disk_used)} / ${fmtBytes(s.disk_total)}</span></div>
+    <div class="kv"><span class="k">Load</span><span class="v">${s.load.join(" / ")}</span></div>
+    <div class="kv"><span class="k">Uptime</span><span class="v">${fmtUptime(s.uptime_s)}</span></div>`;
+}
+
+/* ---------------- routing ---------------- */
+function route(){
+  if(timer){ clearInterval(timer); timer = null; }
+  if(es){ es.close(); es = null; }
+  autoScroll = true;
+  const hash = location.hash;
+  if(hash.startsWith("#/c/")){
+    const name = decodeURIComponent(hash.slice(4));
+    loadDetail(name);
+    timer = setInterval(() => loadDetail(name), 2000);
+  } else {
+    loadDashboard();
+    timer = setInterval(loadDashboard, 5000);
+  }
+}
+window.addEventListener("hashchange", route);
+route();
+</script>
+</body>
+</html>

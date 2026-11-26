@@ -1,0 +1,18 @@
+name: system-stats
+services:
+  system-stats:
+    build: .
+    image: system-stats:latest
+    container_name: system-stats
+    restart: unless-stopped
+    # environment:
+    #   PORT: "8095"          # port inside the container
+    ports:
+      # Localhost only by default. To use it over a LAN or Tailscale,
+      # replace 127.0.0.1 with that interface's IP. Never expose it
+      # directly to the public internet (see README > Security notes).
+      - "127.0.0.1:8095:8095"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /proc:/host/proc:ro
+      - /:/hostfs:ro

@@ -1,0 +1,55 @@
+# CasaOS / ReCasaOS install.
+# Place the project at /DATA/AppData/system-stats (Dockerfile + app/),
+# then use this file as the app's docker-compose.yml.
+name: system-stats
+services:
+    system-stats:
+        container_name: system-stats
+        image: system-stats:latest
+        build:
+            context: /DATA/AppData/system-stats
+            dockerfile: Dockerfile
+        hostname: system-stats
+        network_mode: bridge
+        restart: unless-stopped
+        ports:
+            - "8095:8095"
+        volumes:
+            - type: bind
+              source: /var/run/docker.sock
+              target: /var/run/docker.sock
+            - type: bind
+              source: /proc
+              target: /host/proc
+              read_only: true
+            - type: bind
+              source: /
+              target: /hostfs
+              read_only: true
+            - type: bind
+              source: /DATA/AppData/system-stats/app
+              target: /app
+              read_only: true
+x-casaos:
+    architectures:
+        - amd64
+        - arm64
+    author: Nishad
+    category: Utilities
+    description:
+        en_US: A small live panel - all containers at a glance with system info, and a real-time console plus live stats inside each container.
+    developer: Nishad
+    hostname: ""
+    icon: https://cdn.jsdelivr.net/gh/henrygd/beszel@main/internal/site/public/static/icon.png
+    id: org.nishad.system-stats
+    index: null
+    is_uncontrolled: false
+    main: system-stats
+    port_map: "8095"
+    scheme: http
+    store_app_id: system-stats
+    tagline:
+        en_US: Live containers console and system stats
+    tips: {}
+    title:
+        en_US: System Stats
