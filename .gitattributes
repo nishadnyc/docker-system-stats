@@ -1,0 +1,4 @@
+# The UI is a single hand-written HTML file; keep GitHub's language
+# stats focused on the Python backend.
+*.html linguist-documentation=true
+*.svg linguist-documentation=true

@@ -53,16 +53,28 @@
   .detail{display:grid;grid-template-columns:1fr 300px;gap:14px;align-items:start}
   @media(max-width:900px){.detail{grid-template-columns:1fr}}
   .console{background:#05080c;border:1px solid var(--line);border-radius:12px;
-    display:flex;flex-direction:column;height:72vh;overflow:hidden}
-  .console .chead{display:flex;align-items:center;gap:10px;padding:10px 14px;
-    border-bottom:1px solid var(--line);background:var(--card)}
-  .console .chead b{font-size:14px}
-  .console .chead button{margin-left:auto;background:var(--card2);color:var(--text);
-    border:1px solid var(--line);border-radius:7px;padding:5px 12px;cursor:pointer;
-    font-size:12.5px}
+    display:flex;flex-direction:column;height:74vh;overflow:hidden}
+  .console .chead{display:flex;align-items:center;gap:8px;padding:9px 12px;
+    border-bottom:1px solid var(--line);background:var(--card);flex-wrap:wrap}
+  .console .chead b{font-size:14px;margin-right:4px}
+  .tabs{display:flex;gap:4px;flex-wrap:wrap}
+  .tabs button{background:transparent;color:var(--muted);border:1px solid var(--line);
+    border-radius:7px;padding:5px 11px;cursor:pointer;font-size:12.5px}
+  .tabs button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+  .ctrls{display:flex;align-items:center;gap:8px;padding:8px 12px;flex-wrap:wrap;
+    border-bottom:1px solid var(--line);background:#0a0e14}
+  .ctrls input[type=text]{background:var(--card2);color:var(--text);flex:1;min-width:130px;
+    border:1px solid var(--line);border-radius:7px;padding:5px 10px;font-size:12.5px}
+  .ctrls select{background:var(--card2);color:var(--text);border:1px solid var(--line);
+    border-radius:7px;padding:5px 7px;font-size:12.5px}
+  .ctrls label{color:var(--muted);font-size:12.5px;display:flex;gap:5px;align-items:center}
+  .ctrls button{background:var(--card2);color:var(--text);border:1px solid var(--line);
+    border-radius:7px;padding:5px 12px;cursor:pointer;font-size:12.5px}
+  .ctrls .note{color:var(--muted);font-size:12.5px}
   #logbox{flex:1;overflow-y:auto;padding:12px 14px;
     font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
     font-size:12.3px;line-height:1.55;white-space:pre-wrap;word-break:break-all}
+  #logbox .dim{color:var(--muted)}
   .side{background:var(--card);border:1px solid var(--line);border-radius:12px;
     padding:16px}
   .side h3{margin:0 0 10px;font-size:13px;text-transform:uppercase;
@@ -83,7 +95,8 @@
 
 <script>
 const $ = s => document.querySelector(s);
-let timer = null, es = null, autoScroll = true, lastNet = {};
+let timer = null, es = null, topTimer = null, autoScroll = true, lastNet = {};
+let curName = null, curSource = "traffic", gotLine = false, emptyTimer = null;
 
 function fmtBytes(b){
   if(b == null || isNaN(b)) return "-";
@@ -160,30 +173,29 @@ async function loadDetail(name){
     el.innerHTML = sideHtml(c, s, rxr, txr);
     return; // subsequent polls only refresh the sidebar
   }
+  curName = name; curSource = "traffic";
   $("#livetxt").textContent = "live - console streams in real time, stats every 2s";
   $("#app").innerHTML = `
     <a class="back" href="#/">&larr; All containers</a>
     <div class="detail">
       <div class="console">
-        <div class="chead"><b>${c.name}</b><span style="color:var(--muted);font-size:12px">console - live</span>
-          <button id="scrollbtn">Pause scroll</button></div>
+        <div class="chead"><b>${c.name}</b>
+          <div class="tabs">
+            <button data-src="traffic" class="on">HTTP Traffic</button>
+            <button data-src="logs">Logs</button>
+            <button data-src="top">Processes</button>
+            <button data-src="events">Events</button>
+          </div>
+        </div>
+        <div class="ctrls" id="ctrls"></div>
         <div id="logbox"></div>
       </div>
       <div class="side" id="sideinfo">${sideHtml(c, s, rxr, txr)}</div>
     </div>`;
-  $("#scrollbtn").onclick = () => {
-    autoScroll = !autoScroll;
-    $("#scrollbtn").textContent = autoScroll ? "Pause scroll" : "Resume scroll";
-  };
-  const box = $("#logbox");
-  es = new EventSource("/api/logs/" + encodeURIComponent(name));
-  es.onmessage = ev => {
-    const line = document.createElement("div");
-    try { line.textContent = JSON.parse(ev.data); } catch(e){ line.textContent = ev.data; }
-    box.appendChild(line);
-    while(box.childNodes.length > 1200) box.removeChild(box.firstChild);
-    if(autoScroll) box.scrollTop = box.scrollHeight;
-  };
+  document.querySelectorAll(".tabs button").forEach(b => {
+    b.onclick = () => startSource(b.dataset.src);
+  });
+  startSource("traffic");
 }
 function sideHtml(c, s, rxr, txr){
   return `
@@ -208,10 +220,110 @@ function sideHtml(c, s, rxr, txr){
     <div class="kv"><span class="k">Uptime</span><span class="v">${fmtUptime(s.uptime_s)}</span></div>`;
 }
 
+/* ---------------- console sources ---------------- */
+function stopStreams(){
+  if(es){ es.close(); es = null; }
+  if(topTimer){ clearInterval(topTimer); topTimer = null; }
+  if(emptyTimer){ clearTimeout(emptyTimer); emptyTimer = null; }
+}
+function appendLine(text){
+  const f = ($("#filter") || {}).value || "";
+  if(f && !text.toLowerCase().includes(f.toLowerCase())) return;
+  gotLine = true;
+  const box = $("#logbox"); if(!box) return;
+  const line = document.createElement("div");
+  line.textContent = text;
+  box.appendChild(line);
+  while(box.childNodes.length > 1200) box.removeChild(box.firstChild);
+  if(autoScroll) box.scrollTop = box.scrollHeight;
+}
+function dimLine(text){
+  const box = $("#logbox"); if(!box) return;
+  const line = document.createElement("div");
+  line.className = "dim"; line.textContent = text;
+  box.appendChild(line);
+}
+function openSSE(url, emptyMsg){
+  es = new EventSource(url);
+  es.onmessage = ev => {
+    let text = ev.data;
+    try { text = JSON.parse(ev.data); } catch(e){}
+    appendLine(text);
+  };
+  if(emptyMsg){
+    emptyTimer = setTimeout(() => { if(!gotLine) dimLine(emptyMsg); }, 6000);
+  }
+}
+function renderCtrls(){
+  const c = $("#ctrls"); if(!c) return;
+  const textControls = (curSource === "logs" || curSource === "traffic");
+  c.innerHTML = `
+    ${textControls ? `<input type="text" id="filter" placeholder="Filter lines... (e.g. 404, error, /learn)">` : ""}
+    ${textControls ? `<label>Tail <select id="tail">
+      <option>100</option><option selected>300</option><option>1000</option></select></label>` : ""}
+    ${curSource === "logs" ? `<label><input type="checkbox" id="ts"> Timestamps</label>` : ""}
+    ${curSource === "top" ? `<span class="note">Live process list - refreshes every 2s</span>` : ""}
+    ${curSource === "events" ? `<span class="note">Docker events for this container - start, stop, restart, die...</span>` : ""}
+    <button id="scrollbtn">${autoScroll ? "Pause scroll" : "Resume scroll"}</button>
+    <button id="clearbtn">Clear</button>`;
+  $("#scrollbtn").onclick = () => {
+    autoScroll = !autoScroll;
+    $("#scrollbtn").textContent = autoScroll ? "Pause scroll" : "Resume scroll";
+  };
+  $("#clearbtn").onclick = () => { $("#logbox").innerHTML = ""; };
+  if(textControls){
+    $("#tail").onchange = () => startSource(curSource, true);
+    const ts = $("#ts");
+    if(ts) ts.onchange = () => startSource(curSource, true);
+  }
+}
+async function loadTop(){
+  const r = await fetch("/api/container-top/" + encodeURIComponent(curName));
+  if(!r.ok) return;
+  const d = await r.json();
+  const box = $("#logbox"); if(!box) return;
+  box.innerHTML = "";
+  const head = document.createElement("div");
+  head.className = "dim";
+  head.textContent = "PID     PPID    USER        ELAPSED     COMMAND";
+  box.appendChild(head);
+  d.processes.forEach(p => {
+    const line = document.createElement("div");
+    line.textContent =
+      String(p.pid).padEnd(8) + String(p.ppid).padEnd(8) +
+      String(p.user).padEnd(12) + String(p.elapsed).padEnd(12) + p.command;
+    box.appendChild(line);
+  });
+  if(autoScroll) box.scrollTop = box.scrollHeight;
+}
+function startSource(src, keepCtrls){
+  curSource = src; gotLine = false;
+  stopStreams();
+  document.querySelectorAll(".tabs button").forEach(b =>
+    b.classList.toggle("on", b.dataset.src === src));
+  const box = $("#logbox"); if(box) box.innerHTML = "";
+  renderCtrls();
+  const tail = ($("#tail") || {}).value || "300";
+  const tsEl = $("#ts");
+  const ts = tsEl && tsEl.checked ? "1" : "0";
+  if(src === "traffic"){
+    openSSE("/api/traffic/" + encodeURIComponent(curName) + "?tail=" + tail,
+      "No HTTP requests yet - if this container does not log HTTP traffic to stdout, try the Logs tab.");
+  } else if(src === "logs"){
+    openSSE("/api/logs/" + encodeURIComponent(curName) + "?tail=" + tail + "&timestamps=" + ts);
+  } else if(src === "events"){
+    openSSE("/api/events/" + encodeURIComponent(curName),
+      "No events yet - events appear when the container starts, stops, restarts or dies.");
+  } else if(src === "top"){
+    loadTop();
+    topTimer = setInterval(loadTop, 2000);
+  }
+}
+
 /* ---------------- routing ---------------- */
 function route(){
   if(timer){ clearInterval(timer); timer = null; }
-  if(es){ es.close(); es = null; }
+  stopStreams();
   autoScroll = true;
   const hash = location.hash;
   if(hash.startsWith("#/c/")){

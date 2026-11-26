@@ -26,7 +26,8 @@ Most container dashboards are either powerful-but-overwhelming or pretty-but-sha
 ## Features
 
 - **Live dashboard** — every container as a card with status, CPU and memory bars, and live network rates, next to a system summary (CPU, memory, disk, network, load, uptime). Refreshes every **5 seconds**.
-- **Real-time console** — click any container and its logs stream live into the page (Server-Sent Events, ANSI codes stripped, pause-scroll when you need to read a line).
+- **Real-time console with switchable sources** — click any container and the console opens on **HTTP Traffic**: a clean live feed of requests (time, status, method, path, size, client IP, bot name) parsed out of the container's access logs. One click switches the same console to **Logs** (the raw stream), **Processes** (live `docker top`), or **Events** (start / stop / restart / die).
+- **Console controls** — filter lines by text, choose how much history to load (tail 100 / 300 / 1000), toggle timestamps, pause the auto-scroll, clear the view.
 - **Live detail sidebar** — per-container CPU, memory, network in/out with rates, disk I/O, PIDs, restart count, ports and start time, plus the host summary. Refreshes every **2 seconds**.
 - **Featherweight** — a single Python file on the standard library only (plus the Docker CLI), ~20 MB RAM, ~0% CPU at rest.
 - **Read-only by design** — it cannot start, stop or change anything. It only looks.
@@ -68,7 +69,7 @@ Browser ──HTTP──▶ server.py ──docker CLI──▶ Docker daemon (v
    └── SSE log stream ┘         host metrics from /proc (bind-mounted read-only)
 ```
 
-- `app/server.py` — a standard-library Python HTTP server. It shells out to `docker ps`, `docker stats` and `docker inspect` for container data, reads `/host/proc` for host CPU/memory/network, and proxies `docker logs -f` to the browser as an SSE stream.
+- `app/server.py` — a standard-library Python HTTP server. It shells out to `docker ps`, `docker stats`, `docker inspect` and `docker top` for container data, reads `/host/proc` for host CPU/memory/network, and proxies `docker logs -f` / `docker events` to the browser as SSE streams. The HTTP Traffic view is the same log stream with access-log lines parsed and everything else filtered out, server-side.
 - `app/index.html` — the entire UI: one file, vanilla JS, no build step, no framework.
 - Host disk usage comes from a read-only bind of `/` at `/hostfs`.
 

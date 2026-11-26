@@ -10,6 +10,7 @@ import re
 import subprocess
 import threading
 import time
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(os.environ.get("PORT", "8095"))
@@ -225,6 +226,69 @@ def container_detail(cid):
     }
 
 
+ACCESS_RE = re.compile(
+    r'"(GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH|PROPFIND|CONNECT|TRACE)\s+'
+    r"(\S+)\s+HTTP/[\d.]+\"\s+(\d{3})\s+(\d+|-)"
+)
+TIME_RE = re.compile(r":(\d{2}:\d{2}:\d{2}) ")
+IP_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+BOT_RE = re.compile(r"([A-Za-z0-9_.\-]*(?:[Bb]ot|Spider|Crawler|GPT|Claude)[A-Za-z0-9_.\-]*)")
+
+
+def format_access(line):
+    """Combined-log line -> 'HH:MM:SS  STATUS  METHOD PATH  SIZE  IP  BOT' or None."""
+    m = ACCESS_RE.search(line)
+    if not m:
+        return None
+    method, path, status, size = m.groups()
+    tm = TIME_RE.search(line)
+    when = tm.group(1) if tm else "--:--:--"
+    ips = IP_RE.findall(line)
+    ip = ips[-1] if ips else "-"
+    quoted = re.findall(r'"([^"]*)"', line)
+    bot = ""
+    if len(quoted) >= 3:
+        bm = BOT_RE.search(quoted[2])
+        if bm:
+            bot = "  " + bm.group(1)
+    if len(path) > 90:
+        path = path[:87] + "..."
+    return f"{when}  {status}  {method} {path}  {size}B  {ip}{bot}"
+
+
+def format_event(line):
+    try:
+        e = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if e.get("Action") == "top":
+        return None  # the panel's own Processes view generates these; hide the noise
+    ts = time.strftime("%H:%M:%S", time.gmtime(e.get("time", 0)))
+    attrs = e.get("Actor", {}).get("Attributes", {})
+    bits = [ts, e.get("Action", "?")]
+    if attrs.get("image"):
+        bits.append(attrs["image"])
+    if attrs.get("exitCode") is not None:
+        bits.append(f"exit={attrs['exitCode']}")
+    return "  ".join(bits)
+
+
+def container_top(cid):
+    out = subprocess.run(
+        ["docker", "top", cid, "-eo", "pid,ppid,user,etime,args"],
+        capture_output=True, text=True, timeout=15,
+    )
+    rows = []
+    for line in out.stdout.splitlines()[1:]:
+        parts = line.split(None, 4)
+        if len(parts) == 5:
+            rows.append({
+                "pid": parts[0], "ppid": parts[1], "user": parts[2],
+                "elapsed": parts[3], "command": parts[4],
+            })
+    return rows
+
+
 # ---------------------------------------------------------------- http
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -241,7 +305,9 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
-        path = self.path.split("?", 1)[0]
+        split = urllib.parse.urlsplit(self.path)
+        path = split.path
+        query = urllib.parse.parse_qs(split.query)
         try:
             if path == "/" or path == "/index.html":
                 with open(os.path.join(HERE, "index.html"), "rb") as f:
@@ -265,11 +331,40 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(404, json.dumps({"error": "not found"}))
                 detail["system"] = host_info()
                 self._send(200, json.dumps(detail))
+            elif path.startswith("/api/container-top/"):
+                cid = path[len("/api/container-top/"):]
+                if not SAFE_ID.match(cid):
+                    return self._send(400, json.dumps({"error": "bad id"}))
+                self._send(200, json.dumps({"processes": container_top(cid)}))
             elif path.startswith("/api/logs/"):
                 cid = path[len("/api/logs/"):]
                 if not SAFE_ID.match(cid):
                     return self._send(400, "bad id", "text/plain")
-                self.stream_logs(cid)
+                tail = query.get("tail", ["300"])[0]
+                tail = str(max(10, min(2000, int(tail)))) if tail.isdigit() else "300"
+                args = ["logs", "-f", "--tail", tail]
+                if query.get("timestamps", ["0"])[0] == "1":
+                    args.append("--timestamps")
+                args.append(cid)
+                self.stream_docker(args)
+            elif path.startswith("/api/traffic/"):
+                cid = path[len("/api/traffic/"):]
+                if not SAFE_ID.match(cid):
+                    return self._send(400, "bad id", "text/plain")
+                tail = query.get("tail", ["200"])[0]
+                tail = str(max(10, min(2000, int(tail)))) if tail.isdigit() else "200"
+                self.stream_docker(
+                    ["logs", "-f", "--tail", tail, cid], transform=format_access
+                )
+            elif path.startswith("/api/events/"):
+                cid = path[len("/api/events/"):]
+                if not SAFE_ID.match(cid):
+                    return self._send(400, "bad id", "text/plain")
+                self.stream_docker(
+                    ["events", "--filter", f"container={cid}",
+                     "--format", "{{json .}}"],
+                    transform=format_event,
+                )
             else:
                 self._send(404, json.dumps({"error": "not found"}))
         except (BrokenPipeError, ConnectionResetError):
@@ -280,20 +375,24 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
-    def stream_logs(self, cid):
+    def stream_docker(self, args, transform=None):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("X-Accel-Buffering", "no")
         self.end_headers()
         proc = subprocess.Popen(
-            ["docker", "logs", "-f", "--tail", "300", "--timestamps", cid],
+            ["docker"] + args,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             bufsize=1,
         )
         try:
             for line in proc.stdout:
                 payload = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", line.rstrip("\n"))
+                if transform is not None:
+                    payload = transform(payload)
+                    if payload is None:
+                        continue
                 self.wfile.write(f"data: {json.dumps(payload)}\n\n".encode())
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
